@@ -1,0 +1,298 @@
+
+Import the data, which is the 'Monthly gasoline demand Ontario gallon millions 1960 – 1975'  
+Note: we have saved last 12 months' data of 1975, in order to compare with the accuraty of out model.  
+
+```{r}
+library(readxl)
+monthly_gas <- read_excel("~/Desktop/174/monthly_gas.xlsx", 
+    sheet = "Sheet2", col_names = FALSE)
+#make it as time series class
+ts_gas<-ts(monthly_gas,frequency = 12,start=c(1960,1))
+original<- read_excel("~/Desktop/174/monthly_gas.xlsx", 
+    sheet = "Sheet1", col_names = FALSE)
+original_gas<-ts(original,frequency = 12,start=c(1960,1))
+```
+
+Plot the time series  
+
+```{r}
+ts.plot(ts_gas,ylab='Gasoline Demand', main='Time Series Plot of Monthly Gasoline')
+abline(reg=lm(ts_gas~time(ts_gas)))
+components<-decompose(ts_gas)
+plot(components)
+```
+
+Note:   
+There is an increasing trend in the Demand.  
+The variability of the data changes by time (Roughly seeing from the plot, by the changing range of values
+within different time intervals).  
+The variance in the data keeps on increasing with time.  
+Also, there exists a strong seasonal component.   
+  
+  
+Based on the ACF of the original data and the Dickey–Fuller Test can further tell if the original data need to be differenced (into stationary data)  
+```{r}
+acf(ts_gas, main="ACF of original data at maximum lag",lag.max = 1000)
+library(tseries)
+adf.test(ts_gas, alternative="stationary", k=12)
+```
+From the above Autocorrelation function (ACF), the slow decay of ACF shows non-stationarity.
+The p-value of the original data is very large (than 0.05).   
+So we need to apply some transformation(differencing) method to stabilize the variance of the data (to make it stationary).
+
+
+
+
+
+Different method of ransformation can be applied to the time series.  
+Box-Cox transformation, logarithms transformation
+```{r}
+library(MASS)
+t = 1:length(ts_gas)
+fit = lm(ts_gas ~ t)
+bcTransform = boxcox(ts_gas ~ t,plotit = FALSE)
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))] 
+bc_gas = (1/lambda)*(ts_gas^lambda-1)
+var(bc_gas)
+var(log(ts_gas))
+var(sqrt(ts_gas))
+```
+We choose the one with smallest variance, which is the logarithms transformed data.  
+
+Remove Trend and Seasonality, and compare with the original data 
+```{r}
+#diff seasinality
+diff_log_gas<-diff(log(ts_gas),12)
+acf(diff_log_gas,lag.max = 1000,main='ACF with maximum lag')
+pacf(diff_log_gas,lag.max = 1000,main='PACF with maximum lag')
+#The data are strongly seasonal and obviously non-stationary. Seasonal differencing will be used. Even with maximium lag, it is not clear at this point whether we should do another difference or not. We decide not to, but the choice is not obvious.
+ts.plot(diff_log_gas)
+abline(reg=lm(diff_log_gas~time(diff_log_gas)))
+
+var(diff_log_gas)
+var(diff(diff_log_gas))
+# With ONE time of differencing, the time series becomes stationary.
+adf.test(diff_log_gas, alternative="stationary", k=12)
+#based on the p-value we got form the adf test, the transformed data is stationary
+op <- par(mfrow = c(1,2))
+#original data
+ts.plot(log(ts_gas),main = "Logrithm Transformed data",ylab = expression(X[t])) 
+#Differenced and logarithm-tranformed data
+ts.plot(diff_log_gas,main = "De−trended/seasonalized data", ylab=expression(Y[t]))
+par(op)
+
+
+```
+
+ACF & PACF   
+```{r}
+op1 <- par(mfrow = c(1,2))
+acf(diff_log_gas,main='ACF of modified data ')
+pacf(diff_log_gas,main='PACF of modified data')
+par(op1)
+op2 <- par(mfrow = c(1,2))
+acf(diff_log_gas,lag.max = 1000,main='ACF with maximum lag')
+pacf(diff_log_gas,lag.max = 1000,main='PACF with maximum lag')
+par(op2)
+```
+By visual inspection of the ACF or PACF.  
+From the ACF plot ( with maximum lags) , it is teducing towards zero (tail off), which indicates the ACF process corresponds to Auto-regressive process. The PACF shows the rough order of this AR process.From the PACF plot (with maximum lags), it is evident that after lag2 (or 4), it cuts off. Hence AR(2) is preferred, AR(3) can be considered to check AIC later.  
+From the plots of the seasonal differenced data (with maximum lags), there are spikes in the ACF at lags 2, 4 and 6, but nothing at seasonal lags in the PACF. This may be suggestive of a seasonal MA(1), or MA(2) term.   
+In the non-seasonal lags, there are three significant spikes in the PACF suggesting a possible AR(2) or AR(3) term. The pattern in the ACF is not indicative of any simple model. Thus an ARIMA model can be considered.
+
+Consequently, from the above basic analysis, it suggests that a possible model for these data is a$$ARIMA(2,1,0)\times(0,1,1)_{12}\\ARIMA(2,1,1)\times(2,1,2)_{12}\\ARIMA(2,1,2)\times(2,1,0)_{12}\\ARIMA(3,1,2)\times(0,1,1)_{12}\\ect.
+$$.  
+We will fit this model, along with some variations on it, and compute their AICc values which will be shown in the following table.
+
+
+
+Find AR(p) by yule-walker method  
+```{r}
+?ar
+ar(ts_gas,method = 'yule-walker',aic = TRUE)
+ar(ts_gas[,1], aic = TRUE, order.max = NULL, method = c("mle"))
+ar(ts_gas, aic = FALSE, order.max = 12, method = c("yule-walker"))
+
+```
+The AR(p) model suggess a mode of AR(12) or other mixed model with less parameters. AR(12) contains too many parameters, so we will ignore the AR(12) model, but focus on models with less parameters. 
+
+
+The following funtion gives out all AICs of the ideal choices. We choose the top3 as preferred model.  
+Note: they are too many outcomes, so outcomes will be omitted here.  
+
+```
+## middle element of 'order' is 1 because we are differencing ONCE to get a stationary time series.
+for (i in 2:3){for (j in 0:2){for(l in 0:2){for(k in 0:2){ print(i);print(j);print(l);print(k); print(AIC(arima(log(ts_gas), order = c(i,1,j),seasonal=c(l,1,k))))}}}}
+```
+  
+$$ARIMA(2,1,0)\times(2,1,2)_{12}\rightarrow AIC=-659.377\\ARIMA(2,1,1)\times(2,1,2)_{12}\rightarrow AIC=-657.598\\ARIMA(2,1,2)\times(2,1,2)_{12}\rightarrow AIC=-655.65
+$$.  
+```{r}
+library(forecast)
+auto.arima(log(ts_gas),d=1,D=1)
+```
+Then, we tried running auto.arima() with differencing specified to be d=1 and D=1, which will automatically search over preferred possible model for us.   
+Note: we difference ONCE to get our stationary data, and also de-seasonalized our data.  
+So we will also include this mode  $$ARIMA(2,1,0)\times(0,1,1)_{12}\rightarrow AIC=-649.6$$
+
+```{r}
+
+fit_2222<-arima(log(ts_gas), order = c(2, 1, 2),seasonal = c(2,1,2), method = c("ML"))
+fit_2122<-arima(log(ts_gas), order = c(2, 1, 1),seasonal = c(2,1,2), method = c("ML"))
+fit_2022<-arima(log(ts_gas), order = c(2, 1, 0),seasonal = c(2,1,2), method = c("ML"))
+fit_2001<-arima(log(ts_gas), order = c(2, 1, 0),seasonal = c(0,1,1), method = c("ML"))
+fit_2222
+fit_2122
+fit_2022
+fit_2001
+```
+
+
+```{r}
+source("/Users/Shiming/Desktop/174/plot.roots.r")
+op3 <- par(mfrow = c(2,2))
+plot.roots(NULL,polyroot(c(1,0.9555,0.6365 )), main="roots of ar part")
+plot.roots(NULL,polyroot(c(1,0.9066,0.6505  )), main="roots of ar part")
+plot.roots(NULL,polyroot(c(1,0.9808,0.6754 )), main="roots of ar part")
+plot.roots(NULL,polyroot(c(1,0.9373,0.5609 )), main="roots of ar part")
+par(op3)
+```
+So all 4 models are invertible and causal.
+
+
+
+$$ARIMA(2,1,0)\times(2,1,2)_{12}\rightarrow AIC=-659.377$$
+```{r}
+plot(residuals(fit_2022),main='Fitted Residuals')
+abline(h=0)
+par(mfrow=c(2,2))
+acf(residuals(fit_2022))
+pacf(residuals(fit_2022))
+hist(residuals(fit_2022))
+qqnorm(residuals(fit_2022)) 
+qqline(residuals(fit_2022),col ="blue")
+mean(residuals(fit_2022))
+var(residuals(fit_2022))
+Box.test(residuals(fit_2022),lag=12, type= c("Ljung-Box"), fitdf=2) 
+Box.test(residuals(fit_2022),lag=12, type= c("Box-Pierce"), fitdf=2) 
+Box.test((residuals(fit_2022))^2, lag=12, type= c("Ljung-Box"), fitdf=0)
+shapiro.test(residuals(fit_2022))
+```
+All p-values are large than 0.05.The diagnostic check passed.
+
+$$ARIMA(2,1,1)\times(2,1,2)_{12}\rightarrow AIC=-657.598$$
+```{r}
+plot(residuals(fit_2122),main='Fitted Residuals')
+abline(h=0)
+par(mfrow=c(2,2))
+acf(residuals(fit_2122))
+pacf(residuals(fit_2122))
+hist(residuals(fit_2122))
+qqnorm(residuals(fit_2122)) 
+qqline(residuals(fit_2122),col ="blue")
+mean(residuals(fit_2122))
+var(residuals(fit_2122))
+Box.test(residuals(fit_2122),lag=12, type= c("Ljung-Box"), fitdf=3) 
+Box.test(residuals(fit_2122),lag=12, type= c("Box-Pierce"), fitdf=3) 
+Box.test((residuals(fit_2122))^2, lag=12, type= c("Ljung-Box"), fitdf=0)
+shapiro.test(residuals(fit_2122))
+```
+All p-values are large than 0.05.The diagnostic check passed.
+
+$$ARIMA(2,1,2)\times(2,1,2)_{12}\rightarrow AIC=-655.65$$
+
+```{r}
+plot(residuals(fit_2222),main='Fitted Residuals')
+abline(h=0)
+par(mfrow=c(2,2))
+acf(residuals(fit_2222))
+pacf(residuals(fit_2222))
+hist(residuals(fit_2222))
+qqnorm(residuals(fit_2222)) 
+qqline(residuals(fit_2222),col ="blue")
+mean(residuals(fit_2222))
+var(residuals(fit_2222))
+Box.test(residuals(fit_2222),lag=12, type= c("Ljung-Box"), fitdf=4) 
+Box.test(residuals(fit_2222),lag=12, type= c("Box-Pierce"), fitdf=4) 
+Box.test((residuals(fit_2222))^2, lag=12, type= c("Ljung-Box"), fitdf=0)
+shapiro.test(residuals(fit_2222))
+```
+Not all p-values are large than 0.05.The diagnostic check didn't pass. Thus, the mode  
+$$ARIMA(2,1,2)\times(2,1,2)_{12}$$
+will be omited.
+
+$$ARIMA(2,1,0)\times(0,1,1)_{12}\rightarrow AIC=-649.6$$
+
+```{r}
+plot(residuals(fit_2001),main='Fitted Residuals')
+abline(h=0)
+par(mfrow=c(2,2))
+acf(residuals(fit_2001))
+pacf(residuals(fit_2001))
+hist(residuals(fit_2001))
+qqnorm(residuals(fit_2001)) 
+qqline(residuals(fit_2001),col ="blue")
+mean(residuals(fit_2001))
+var(residuals(fit_2001))
+Box.test(residuals(fit_2001),lag=12, type= c("Ljung-Box"), fitdf=2) 
+Box.test(residuals(fit_2001),lag=12, type= c("Box-Pierce"), fitdf=2) 
+Box.test((residuals(fit_2001))^2, lag=12, type= c("Ljung-Box"), fitdf=0)
+?Box.test
+shapiro.test(residuals(fit_2001))
+```
+
+
+According to the principle of parsimony, it is preferred to choose the model with the least pramaters.  
+Which means here we prefer to choose the ARIMA(2,1,0)*(0,1,1).   
+However, we will also apply the ARIMA(2,1,0)*(2,1,2) since it has the smallest AIC. We will compare with model could provide a better forcasting.  
+
+Model:  
+$$ARIMA(2,1,2)\times(2,1,2)_{12}\rightarrow smallest-AIC$$
+$$(1+0.9808B+0.6754B^2+0.2147B^{12}-0.0744B^{24})\nabla_{12}\nabla X_{t}=(1-0.3037B^{12}-0.2566B^{24})Z_{t}\space;\space \widehat{\delta}_{z}=1.312$$
+
+```{r}
+op11 <- par(mfrow = c(1,2))
+pred <- predict(fit_2022, n.ahead = 1*12)
+ts.plot(ts_gas,2.718^pred$pred, log = "y", lty = c(1,3),col='blue',main="Prediction of Year 1975")
+ts.plot(original_gas,main="Raw Data Include 1975")
+par(op11)
+
+ts.plot(original_gas,main='Forecasting of Gasline Demand in 1975 (Blue Dots) ')
+points(2.718^pred$pred,col='blue',lty=5,pch=20)
+
+```
+$$95\%-Percent-Confidence-Interval$$
+```{r}
+fit1 <- arima(ts_gas, order=c(2,1,0), seasonal=c(2,1,2))
+pred1<-predict(fit1,n.ahead = 12)
+ts.plot(ts_gas,pred1$pred, log = "y", lty = c(1,3),col='blue',main="95% CI: Prediction of Year 1975")
+lines(pred1$pred+1.96*pred1$se,lty=1, col="black") 
+lines(pred1$pred-1.96*pred1$se,lty=1, col="red")
+fit_2001
+```
+
+Model:  
+$$ARIMA(2,1,0)\times(0,1,1)_{12}\rightarrow Least-Parameters$$
+$$(1+0.9948B+0.6969B^2)\nabla_{12}\nabla X_{t}=(1-0.5766B^{12})Z_{t}\space;\space \widehat{\delta}_{z}=0.001097$$
+```{r}
+op11 <- par(mfrow = c(1,2))
+pred01 <- predict(fit_2001, n.ahead = 1*12)
+ts.plot(ts_gas,2.718^pred01$pred, log = "y", lty = c(1,3),col='blue',main='Gas Demand: Prediction of 1975')
+
+ts.plot(original_gas,main="Raw Data of 1975")
+par(op11)
+ts.plot(original_gas,2.718^pred01$pred, log = "y", lty = c(1,3),col='blue',main='Gas Demand: Prediction of 1975')
+points(2.718^pred01$pred,pch=20)
+
+```
+$$95\%-Percent-Confidence-Interval$$
+```{r}
+fit11 <- arima(ts_gas, order=c(2,1,0), seasonal=c(0,1,1))
+pred11<-predict(fit1,n.ahead = 12)
+ts.plot(ts_gas,pred11$pred, log = "y", lty = c(1,3),col='blue',main="95% CI: Prediction of Year 1975")
+lines(pred11$pred+1.96*pred11$se,lty=1, col="black") 
+lines(pred11$pred-1.96*pred11$se,lty=1, col="red")
+
+```
+
+
